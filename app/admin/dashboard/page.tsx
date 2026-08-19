@@ -61,11 +61,15 @@ export default function AdminDashboard() {
   const [user, setUser] = useState<any>(null);
 
   // Métricas
-  const [totalShipments, setTotalShipments] = useState(0);
-  const [totalBusinesses, setTotalBusinesses] = useState(0);
-  const [totalMotorists, setTotalMotorists] = useState(0);
-  const [totalRevenue, setTotalRevenue] = useState(0);
-  const [pendingShipments, setPendingShipments] = useState(0);
+  const [metrics, setMetrics] = useState<any>({
+    totalShipments: 0,
+    totalBusinesses: 0,
+    totalMotorists: 0,
+    totalRevenue: 0,
+    pendingShipments: 0,
+    inProgressCount: 0,
+    avgFee: 0,
+  });
 
   // Listas
   const [recentShipments, setRecentShipments] = useState<any[]>([]);
@@ -81,7 +85,7 @@ export default function AdminDashboard() {
 
   const loadData = async () => {
     try {
-      // 1. Verificar autenticación y rol
+      // Verificar autenticación y rol
       const { data: { user }, error: authError } = await supabase.auth.getUser();
       if (authError || !user) { 
         router.push('/'); 
@@ -89,7 +93,6 @@ export default function AdminDashboard() {
       }
       setUser(user);
 
-      // 2. Verificar que el usuario sea admin en profiles
       const { data: profile, error: profileError } = await supabase
         .from('profiles')
         .select('role, status')
@@ -101,113 +104,25 @@ export default function AdminDashboard() {
         return;
       }
 
-      // 3. Cargar métricas
-      const { count: shipmentsCount } = await supabase.from('shipments').select('*', { count: 'exact', head: true });
-      setTotalShipments(shipmentsCount || 0);
-
-      const { count: businessesCount } = await supabase.from('businesses').select('*', { count: 'exact', head: true });
-      setTotalBusinesses(businessesCount || 0);
-
-      const { count: driversCount } = await supabase.from('drivers').select('*', { count: 'exact', head: true });
-      setTotalMotorists(driversCount || 0);
-
-      const { count: pendingCount } = await supabase.from('shipments').select('*', { count: 'exact', head: true }).eq('status', 'created');
-      setPendingShipments(pendingCount || 0);
-
-      // 4. Ingresos estimados
-      const { data: shipments } = await supabase.from('shipments').select('fee, status').not('status', 'eq', 'cancelled');
-      if (shipments) {
-        let total = 0;
-        shipments.forEach((s: any) => total += 20 + (s.fee * 0.10));
-        setTotalRevenue(total);
+      // 🔥 Cargar datos desde la API (usando service_role)
+      const res = await fetch('/api/admin/dashboard-data');
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || 'Error al cargar datos');
       }
+      const data = await res.json();
 
-      // 5. Últimos envíos
-      const { data: recentShip } = await supabase.from('shipments').select('*').order('created_at', { ascending: false }).limit(10);
-      setRecentShipments(recentShip || []);
-
-      // 6. Últimos usuarios (aprobados)
-      const { data: profiles } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('status', 'approved')
-        .order('created_at', { ascending: false })
-        .limit(10);
-
-      if (profiles) {
-        const enriched = await Promise.all(
-          profiles.map(async (p: any) => {
-            let displayName = p.name || 'Sin nombre';
-            let extraInfo = '';
-            let secondaryText = '';
-
-            if (p.role === 'business') {
-              // 1. Intentar obtener el nombre de la tabla businesses
-              const { data: biz } = await supabase
-                .from('businesses')
-                .select('business_name, owner_name')
-                .eq('user_id', p.id)
-                .maybeSingle();
-              
-              if (biz?.business_name) {
-                displayName = biz.business_name;
-                extraInfo = 'Negocio';
-                secondaryText = `Dueño: ${biz.owner_name || p.name || 'Sin nombre'}`;
-              } else if (p.business_name) {
-                displayName = p.business_name;
-                extraInfo = 'Negocio';
-                secondaryText = `Dueño: ${p.name || 'Sin nombre'}`;
-              } else {
-                displayName = p.name || 'Sin nombre';
-                extraInfo = 'Negocio (sin registrar)';
-              }
-            } else if (p.role === 'motorist') {
-              const { data: drv } = await supabase
-                .from('drivers')
-                .select('full_name')
-                .eq('user_id', p.id)
-                .maybeSingle();
-              if (drv?.full_name) {
-                displayName = drv.full_name;
-                extraInfo = 'Motorizado';
-              } else {
-                displayName = p.name || 'Sin nombre';
-                extraInfo = 'Motorizado (sin registrar)';
-              }
-            } else if (p.role === 'admin') {
-              extraInfo = 'Admin';
-              secondaryText = `Email: ${p.email || ''}`;
-            }
-
-            return { ...p, displayName, extraInfo, secondaryText };
-          })
-        );
-        setRecentUsers(enriched);
-      }
-
-      // 7. Pendientes de aprobación (incluye todos los pendientes, sin límite)
-      const { data: pending } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('status', 'pending')
-        .order('created_at', { ascending: true });
-      setPendingUsers(pending || []);
-
-      // 8. Negocios y motorizados para el mapa
-      const { data: bizData } = await supabase
-        .from('businesses')
-        .select('id, business_name, lat, lng, owner_name');
-      setBusinesses(bizData || []);
-
-      const { data: driverData } = await supabase
-        .from('drivers')
-        .select('id, full_name, lat, lng, plate');
-      setDrivers(driverData || []);
+      setMetrics(data.metrics);
+      setRecentShipments(data.recentShipments);
+      setRecentUsers(data.approvedUsers);
+      setPendingUsers(data.pendingUsers);
+      setBusinesses(data.businesses);
+      setDrivers(data.drivers);
 
       setError(null);
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
-      setError('Error al cargar datos.');
+      setError(err.message || 'Error al cargar datos.');
     } finally {
       setLoading(false);
     }
@@ -220,43 +135,40 @@ export default function AdminDashboard() {
   }, []);
 
   // ============================================================
-  // 🔥 APROBAR USUARIO (USA profile.business_name DIRECTAMENTE)
+  // 🔥 APROBAR (usa API)
   // ============================================================
   const handleApprove = async (profile: any) => {
     setProcessingUserId(profile.id);
     setProcessingAction('approve');
     try {
-      // 1. Actualizar perfil a approved
-      await supabase.from('profiles').update({ status: 'approved' }).eq('id', profile.id);
-
-      // 2. Crear registro en businesses o drivers con los datos del perfil
-      if (profile.role === 'business') {
-        const businessName = profile.business_name || profile.name || 'Negocio sin nombre';
-        await supabase.from('businesses').insert({
-          user_id: profile.id,
-          business_name: businessName,
-          owner_name: profile.name,
-          ruc: profile.ruc || null,
-          address: profile.business_address || null,
-          lat: profile.business_lat || null,
-          lng: profile.business_lng || null,
-          status: 'approved'
-        });
-      } else if (profile.role === 'motorist') {
-        await supabase.from('drivers').insert({
-          user_id: profile.id,
-          full_name: profile.name,
-          license: profile.license || null,
-          plate: profile.plate || null,
-          vehicle_model: profile.vehicle_model || null,
-          vehicle_year: profile.vehicle_year || null,
-          lat: profile.driver_lat || null,
-          lng: profile.driver_lng || null,
-          status: 'approved'
-        });
+      const res = await fetch('/api/admin/approve-user', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId: profile.id,
+          role: profile.role,
+          extraData: {
+            business_name: profile.business_name || profile.name,
+            owner_name: profile.name,
+            ruc: profile.ruc,
+            address: profile.business_address,
+            lat: profile.business_lat,
+            lng: profile.business_lng,
+            full_name: profile.name,
+            license: profile.license,
+            plate: profile.plate,
+            vehicle_model: profile.vehicle_model,
+            vehicle_year: profile.vehicle_year,
+          }
+        }),
+      });
+      if (res.ok) {
+        alert('✅ Usuario aprobado');
+        await loadData();
+      } else {
+        const err = await res.json();
+        alert('❌ Error: ' + err.error);
       }
-      alert(`✅ ${profile.name} ha sido aprobado.`);
-      await loadData();
     } catch (err: any) {
       alert('❌ Error: ' + err.message);
     } finally {
@@ -265,19 +177,29 @@ export default function AdminDashboard() {
     }
   };
 
+  // ============================================================
+  // 🔥 RECHAZAR (usa API)
+  // ============================================================
   const handleReject = async (profile: any) => {
+    if (!confirm(`¿Rechazar a "${profile.name}"?`)) return;
     setProcessingUserId(profile.id);
     setProcessingAction('reject');
     try {
-      // 1. Eliminar registro en businesses si existe (para negocios rechazados)
-      if (profile.role === 'business') {
-        await supabase.from('businesses').delete().eq('user_id', profile.id);
+      const res = await fetch('/api/admin/reject-user', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId: profile.id,
+          role: profile.role,
+        }),
+      });
+      if (res.ok) {
+        alert('✅ Usuario rechazado');
+        await loadData();
+      } else {
+        const err = await res.json();
+        alert('❌ Error: ' + err.error);
       }
-      // 2. Actualizar perfil a rejected
-      await supabase.from('profiles').update({ status: 'rejected' }).eq('id', profile.id);
-      
-      alert(`❌ ${profile.name} rechazado.`);
-      await loadData();
     } catch (err: any) {
       alert('❌ Error: ' + err.message);
     } finally {
@@ -286,6 +208,9 @@ export default function AdminDashboard() {
     }
   };
 
+  // ============================================================
+  // 🔥 ELIMINAR (ya usa API, solo agregamos confirmación)
+  // ============================================================
   const handleDelete = async (profile: any) => {
     if (!confirm(`¿Eliminar permanentemente a "${profile.displayName}"?`)) return;
     setProcessingUserId(profile.id);
@@ -319,8 +244,6 @@ export default function AdminDashboard() {
   if (loading) return <div className="min-h-screen flex items-center justify-center text-sm">Cargando panel...</div>;
   if (error) return <div className="min-h-screen flex flex-col items-center justify-center p-4"><p className="text-red-600">{error}</p><Button onClick={() => window.location.reload()}>Reintentar</Button></div>;
 
-  const inProgressCount = recentShipments.filter(s => ['accepted','picked_up','in_transit'].includes(s.status)).length;
-
   const getStatusBadge = (status: string) => {
     const map: Record<string, any> = {
       created: { label: 'Creado', className: 'bg-slate-500 text-white' },
@@ -349,10 +272,10 @@ export default function AdminDashboard() {
 
         {/* Métricas */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-          <Card><CardHeader className="pb-1 px-3 pt-3"><CardTitle className="text-[10px] font-medium text-slate-500 flex items-center gap-1"><Package size={14} /> Envíos</CardTitle></CardHeader><CardContent className="px-3 pb-3 pt-0"><p className="text-lg font-bold">{totalShipments}</p></CardContent></Card>
-          <Card><CardHeader className="pb-1 px-3 pt-3"><CardTitle className="text-[10px] font-medium text-slate-500 flex items-center gap-1"><Users size={14} /> Negocios</CardTitle></CardHeader><CardContent className="px-3 pb-3 pt-0"><p className="text-lg font-bold">{totalBusinesses}</p></CardContent></Card>
-          <Card><CardHeader className="pb-1 px-3 pt-3"><CardTitle className="text-[10px] font-medium text-slate-500 flex items-center gap-1"><Truck size={14} /> Motorizados</CardTitle></CardHeader><CardContent className="px-3 pb-3 pt-0"><p className="text-lg font-bold">{totalMotorists}</p></CardContent></Card>
-          <Card><CardHeader className="pb-1 px-3 pt-3"><CardTitle className="text-[10px] font-medium text-slate-500 flex items-center gap-1"><DollarSign size={14} /> Ingresos</CardTitle></CardHeader><CardContent className="px-3 pb-3 pt-0"><p className="text-lg font-bold text-green-600">C$ {totalRevenue.toFixed(0)}</p></CardContent></Card>
+          <Card><CardHeader className="pb-1 px-3 pt-3"><CardTitle className="text-[10px] font-medium text-slate-500 flex items-center gap-1"><Package size={14} /> Envíos</CardTitle></CardHeader><CardContent className="px-3 pb-3 pt-0"><p className="text-lg font-bold">{metrics.totalShipments}</p></CardContent></Card>
+          <Card><CardHeader className="pb-1 px-3 pt-3"><CardTitle className="text-[10px] font-medium text-slate-500 flex items-center gap-1"><Users size={14} /> Negocios</CardTitle></CardHeader><CardContent className="px-3 pb-3 pt-0"><p className="text-lg font-bold">{metrics.totalBusinesses}</p></CardContent></Card>
+          <Card><CardHeader className="pb-1 px-3 pt-3"><CardTitle className="text-[10px] font-medium text-slate-500 flex items-center gap-1"><Truck size={14} /> Motorizados</CardTitle></CardHeader><CardContent className="px-3 pb-3 pt-0"><p className="text-lg font-bold">{metrics.totalMotorists}</p></CardContent></Card>
+          <Card><CardHeader className="pb-1 px-3 pt-3"><CardTitle className="text-[10px] font-medium text-slate-500 flex items-center gap-1"><DollarSign size={14} /> Ingresos</CardTitle></CardHeader><CardContent className="px-3 pb-3 pt-0"><p className="text-lg font-bold text-green-600">C$ {metrics.totalRevenue.toFixed(0)}</p></CardContent></Card>
         </div>
 
         {/* Mapa */}
@@ -366,75 +289,39 @@ export default function AdminDashboard() {
 
         {/* Estados rápidos */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-          <div className="bg-white rounded-xl border p-3 shadow-sm flex justify-between items-center"><div><p className="text-[10px] text-slate-500">Pendientes</p><p className="text-base font-bold">{pendingShipments}</p></div><Badge className="text-[10px] bg-amber-50 text-amber-700">{totalShipments > 0 ? Math.round((pendingShipments/totalShipments)*100) : 0}%</Badge></div>
-          <div className="bg-white rounded-xl border p-3 shadow-sm flex justify-between items-center"><div><p className="text-[10px] text-slate-500">En progreso</p><p className="text-base font-bold">{inProgressCount}</p></div><Badge className="text-[10px] bg-indigo-50 text-indigo-700">Activos</Badge></div>
+          <div className="bg-white rounded-xl border p-3 shadow-sm flex justify-between items-center"><div><p className="text-[10px] text-slate-500">Pendientes</p><p className="text-base font-bold">{metrics.pendingShipments}</p></div><Badge className="text-[10px] bg-amber-50 text-amber-700">{metrics.totalShipments > 0 ? Math.round((metrics.pendingShipments/metrics.totalShipments)*100) : 0}%</Badge></div>
+          <div className="bg-white rounded-xl border p-3 shadow-sm flex justify-between items-center"><div><p className="text-[10px] text-slate-500">En progreso</p><p className="text-base font-bold">{metrics.inProgressCount}</p></div><Badge className="text-[10px] bg-indigo-50 text-indigo-700">Activos</Badge></div>
           <div className="bg-white rounded-xl border p-3 shadow-sm flex justify-between items-center"><div><p className="text-[10px] text-slate-500">Entregados</p><p className="text-base font-bold">{recentShipments.filter(s => s.status === 'delivered' || s.status === 'completed').length}</p></div><Badge className="text-[10px] bg-green-50 text-green-700">OK</Badge></div>
-          <div className="bg-white rounded-xl border p-3 shadow-sm flex justify-between items-center"><div><p className="text-[10px] text-slate-500">Tarifa Ø</p><p className="text-base font-bold">C$ {recentShipments.length > 0 ? Math.round(recentShipments.reduce((a,s) => a + (s.fee||0), 0) / recentShipments.length) : 0}</p></div><Badge className="text-[10px] bg-purple-50 text-purple-700">Promedio</Badge></div>
+          <div className="bg-white rounded-xl border p-3 shadow-sm flex justify-between items-center"><div><p className="text-[10px] text-slate-500">Tarifa Ø</p><p className="text-base font-bold">C$ {metrics.avgFee}</p></div><Badge className="text-[10px] bg-purple-50 text-purple-700">Promedio</Badge></div>
         </div>
 
-        {/* ============================================================ */}
-        {/* 🔥 USUARIOS PENDIENTES (con nombre del negocio y estado) */}
-        {/* ============================================================ */}
+        {/* Pendientes de aprobación */}
         <Card>
           <CardHeader className="pb-1 px-3 pt-3 flex flex-row justify-between items-center">
-            <CardTitle className="text-xs font-semibold flex items-center gap-1">
-              <UserCheck size={14} /> Usuarios Pendientes
-            </CardTitle>
+            <CardTitle className="text-xs font-semibold flex items-center gap-1"><UserCheck size={14} /> Usuarios Pendientes</CardTitle>
             <Badge variant="outline" className="text-[10px]">{pendingUsers.length}</Badge>
           </CardHeader>
           <CardContent className="px-3 pb-3 max-h-64 overflow-y-auto space-y-2">
-            {pendingUsers.length === 0 ? (
-              <p className="text-xs text-slate-400 text-center py-4">No hay usuarios pendientes.</p>
-            ) : (
+            {pendingUsers.length === 0 ? <p className="text-xs text-slate-400 text-center py-4">No hay usuarios pendientes.</p> :
               pendingUsers.map(p => (
                 <div key={p.id} className="flex flex-col sm:flex-row justify-between items-start sm:items-center border-b pb-2 gap-2">
-                  <div>
-                    {/* 🔥 Mostrar el nombre del negocio si existe, sino el nombre del dueño */}
-                    <p className="text-sm font-medium">
-                      {p.business_name || p.name || 'Sin nombre'}
-                    </p>
-                    <p className="text-[10px] text-slate-400">
-                      {p.phone || 'Sin teléfono'} · <span className="text-amber-600 font-medium">Pendiente de aprobación</span>
-                    </p>
-                  </div>
+                  <div><p className="text-sm font-medium">{p.business_name || p.name || 'Sin nombre'}</p><p className="text-[10px] text-slate-400">{p.phone || 'Sin teléfono'} · <span className="text-amber-600 font-medium">Pendiente</span></p></div>
                   <div className="flex items-center gap-2">
-                    <Button
-                      size="sm"
-                      className="h-7 px-3 text-[10px] bg-green-600 hover:bg-green-700 text-white"
-                      onClick={() => handleApprove(p)}
-                      disabled={processingUserId === p.id}
-                    >
-                      {processingUserId === p.id && processingAction === 'approve' ? (
-                        <Loader2 size={12} className="animate-spin" />
-                      ) : (
-                        <UserCheck size={12} className="mr-1" />
-                      )}
-                      Aprobar
+                    <Button size="sm" className="h-7 px-3 text-[10px] bg-green-600 hover:bg-green-700 text-white" onClick={() => handleApprove(p)} disabled={processingUserId === p.id}>
+                      {processingUserId === p.id && processingAction === 'approve' ? <Loader2 size={12} className="animate-spin" /> : <UserCheck size={12} className="mr-1" />} Aprobar
                     </Button>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      className="h-7 px-3 text-[10px] border-red-200 text-red-600 hover:bg-red-50"
-                      onClick={() => handleReject(p)}
-                      disabled={processingUserId === p.id}
-                    >
-                      {processingUserId === p.id && processingAction === 'reject' ? (
-                        <Loader2 size={12} className="animate-spin" />
-                      ) : (
-                        <UserX size={12} className="mr-1" />
-                      )}
-                      Rechazar
+                    <Button size="sm" variant="outline" className="h-7 px-3 text-[10px] border-red-200 text-red-600 hover:bg-red-50" onClick={() => handleReject(p)} disabled={processingUserId === p.id}>
+                      {processingUserId === p.id && processingAction === 'reject' ? <Loader2 size={12} className="animate-spin" /> : <UserX size={12} className="mr-1" />} Rechazar
                     </Button>
                   </div>
                 </div>
               ))
-            )}
+            }
           </CardContent>
         </Card>
 
         {/* Últimos envíos y usuarios */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {/* Últimos Envíos */}
           <Card>
             <CardHeader className="pb-1 px-3 pt-3 flex flex-row justify-between items-center">
               <CardTitle className="text-xs font-semibold flex items-center gap-1"><Package size={14} /> Últimos Envíos</CardTitle>
@@ -452,101 +339,40 @@ export default function AdminDashboard() {
             </CardContent>
           </Card>
 
-          {/* Últimos Usuarios (aprobados) */}
           <Card>
             <CardHeader className="pb-1 px-3 pt-3 flex flex-row justify-between items-center">
               <CardTitle className="text-xs font-semibold flex items-center gap-1"><Users size={14} /> Usuarios</CardTitle>
               <Badge variant="outline" className="text-[10px]">{recentUsers.length}</Badge>
             </CardHeader>
-            
-            {/* Filtros (solo para usuarios aprobados) */}
             <div className="px-3 pb-2 flex flex-wrap gap-1">
-              <Button
-                variant={userFilter === 'all' ? 'default' : 'outline'}
-                size="sm"
-                className="h-6 px-2 text-[10px]"
-                onClick={() => setUserFilter('all')}
-              >
-                Todos
-              </Button>
-              <Button
-                variant={userFilter === 'business' ? 'default' : 'outline'}
-                size="sm"
-                className="h-6 px-2 text-[10px]"
-                onClick={() => setUserFilter('business')}
-              >
-                Negocios
-              </Button>
-              <Button
-                variant={userFilter === 'motorist' ? 'default' : 'outline'}
-                size="sm"
-                className="h-6 px-2 text-[10px]"
-                onClick={() => setUserFilter('motorist')}
-              >
-                Motorizados
-              </Button>
-              <Button
-                variant={userFilter === 'admin' ? 'default' : 'outline'}
-                size="sm"
-                className="h-6 px-2 text-[10px]"
-                onClick={() => setUserFilter('admin')}
-              >
-                Admins
-              </Button>
+              <Button variant={userFilter === 'all' ? 'default' : 'outline'} size="sm" className="h-6 px-2 text-[10px]" onClick={() => setUserFilter('all')}>Todos</Button>
+              <Button variant={userFilter === 'business' ? 'default' : 'outline'} size="sm" className="h-6 px-2 text-[10px]" onClick={() => setUserFilter('business')}>Negocios</Button>
+              <Button variant={userFilter === 'motorist' ? 'default' : 'outline'} size="sm" className="h-6 px-2 text-[10px]" onClick={() => setUserFilter('motorist')}>Motorizados</Button>
+              <Button variant={userFilter === 'admin' ? 'default' : 'outline'} size="sm" className="h-6 px-2 text-[10px]" onClick={() => setUserFilter('admin')}>Admins</Button>
             </div>
-
             <CardContent className="px-3 pb-3 max-h-64 overflow-y-auto space-y-2">
-              {recentUsers.length === 0 ? (
-                <p className="text-xs text-slate-400 text-center py-4">No hay usuarios aprobados.</p>
-              ) : (
-                recentUsers
-                  .filter(u => {
-                    if (userFilter === 'all') return true;
-                    return u.role === userFilter;
-                  })
-                  .map(u => (
-                    <div key={u.id} className="flex justify-between items-center border-b border-slate-100 pb-2 hover:bg-slate-50 px-1 py-1 rounded group transition-colors">
-                      <div className="flex-1 min-w-0 pr-2">
-                        <div className="flex items-center gap-2">
-                          <p className="text-sm font-medium text-slate-800 truncate">
-                            {u.displayName || u.name || 'Sin nombre'}
-                          </p>
-                          {u.extraInfo && (
-                            <Badge className={`text-[10px] px-1.5 py-0 ${u.extraInfo === 'Negocio' ? 'bg-blue-100 text-blue-800' : u.extraInfo === 'Motorizado' ? 'bg-green-100 text-green-800' : 'bg-purple-100 text-purple-800'}`}>
-                              {u.extraInfo}
-                            </Badge>
-                          )}
-                        </div>
-                        {u.secondaryText && (
-                          <p className="text-[10px] text-slate-400">{u.secondaryText}</p>
-                        )}
-                        <p className="text-[10px] text-slate-400">{u.phone || 'Sin teléfono'}</p>
+              {recentUsers.length === 0 ? <p className="text-xs text-slate-400 text-center py-4">No hay usuarios.</p> :
+                recentUsers.filter(u => userFilter === 'all' ? true : u.role === userFilter).map(u => (
+                  <div key={u.id} className="flex justify-between items-center border-b pb-2 hover:bg-slate-50 px-1 py-1 rounded group transition-colors">
+                    <div className="flex-1 min-w-0 pr-2">
+                      <div className="flex items-center gap-2">
+                        <p className="text-sm font-medium text-slate-800 truncate">{u.displayName || u.name || 'Sin nombre'}</p>
+                        {u.extraInfo && <Badge className={`text-[10px] px-1.5 py-0 ${u.extraInfo === 'Negocio' ? 'bg-blue-100 text-blue-800' : u.extraInfo === 'Motorizado' ? 'bg-green-100 text-green-800' : 'bg-purple-100 text-purple-800'}`}>{u.extraInfo}</Badge>}
                       </div>
-                      
-                      {/* Botón Eliminar (visible en móvil y en hover en desktop) */}
-                      {u.status === 'approved' && (
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          className="h-7 w-7 p-0 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity text-red-500 hover:bg-red-50 hover:text-red-600"
-                          onClick={() => handleDelete(u)}
-                          disabled={processingUserId === u.id}
-                          title="Eliminar usuario"
-                        >
-                          {processingUserId === u.id && processingAction === 'delete' ? (
-                            <Loader2 size={14} className="animate-spin" />
-                          ) : (
-                            <Trash2 size={14} />
-                          )}
-                        </Button>
-                      )}
+                      {u.secondaryText && <p className="text-[10px] text-slate-400">{u.secondaryText}</p>}
+                      <p className="text-[10px] text-slate-400">{u.phone}</p>
                     </div>
-                  ))
-              )}
+                    {u.status === 'approved' && (
+                      <Button size="sm" variant="ghost" className="h-7 w-7 p-0 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity text-red-500 hover:bg-red-50" onClick={() => handleDelete(u)} disabled={processingUserId === u.id} title="Eliminar usuario">
+                        {processingUserId === u.id && processingAction === 'delete' ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
+                      </Button>
+                    )}
+                  </div>
+                ))
+              }
             </CardContent>
           </Card>
         </div>
-
         <div className="text-center text-[10px] text-slate-400 pt-3 border-t">UrbanLogistic · Actualización cada 10s</div>
       </main>
     </div>

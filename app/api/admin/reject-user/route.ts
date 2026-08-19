@@ -10,23 +10,24 @@ const supabaseAdmin = createClient(
 
 export async function POST(req: Request) {
   try {
-    const { userId } = await req.json();
+    const { userId, role } = await req.json();
 
     if (!userId) {
       return NextResponse.json({ error: 'Falta el ID del usuario' }, { status: 400 });
     }
 
-    // 1. Verificar que quien llama es admin
-    const cookieStore = cookies();
+    // Verificar que quien llama es admin
+    const cookieStore = await cookies();
     const supabaseAuth = createServerClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL!,
       process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
       {
         cookies: {
-          get: (name) => cookieStore.get(name)?.value,
+          get: (name: string) => cookieStore.get(name)?.value,
         },
       }
     );
+
     const { data: { user } } = await supabaseAuth.auth.getUser();
 
     if (!user) {
@@ -43,26 +44,21 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'No autorizado' }, { status: 403 });
     }
 
-    // 2. Eliminar registros relacionados
-    // Negocio
-    await supabaseAdmin.from('businesses').delete().eq('user_id', userId);
-    // Motorizado
-    await supabaseAdmin.from('drivers').delete().eq('user_id', userId);
-
-    // 3. Eliminar perfil
-    await supabaseAdmin.from('profiles').delete().eq('id', userId);
-
-    // 4. Eliminar de auth.users
-    const { error: authError } = await supabaseAdmin.auth.admin.deleteUser(userId);
-
-    if (authError) {
-      console.error('Error al eliminar auth user:', authError);
-      return NextResponse.json({ error: authError.message }, { status: 500 });
+    // Si es negocio, eliminar registro en businesses
+    if (role === 'business') {
+      await supabaseAdmin.from('businesses').delete().eq('user_id', userId);
     }
 
+    // Actualizar perfil a rejected
+    await supabaseAdmin
+      .from('profiles')
+      .update({ status: 'rejected' })
+      .eq('id', userId);
+
     return NextResponse.json({ success: true });
-  } catch (error: any) {
-    console.error('Error en delete-user:', error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+  } catch (error) {
+    console.error('Error en reject-user:', error);
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    return NextResponse.json({ error: errorMessage }, { status: 500 });
   }
 }
